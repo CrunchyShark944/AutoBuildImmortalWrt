@@ -1,4 +1,11 @@
 #!/bin/bash
+# Native VMDK generation in the 24.10 image rules requires qemu-img.
+# This runs as root inside the ImageBuilder container, not in the firmware.
+if ! command -v qemu-img >/dev/null 2>&1; then
+    echo "ImageBuilder requires qemu-img (qemu-utils) for VMDK output" >&2
+    exit 1
+fi
+
 # Log file for debugging
 source shell/custom-packages.sh
 source shell/switch_repository.sh
@@ -6,7 +13,7 @@ echo "第三方软件包: $CUSTOM_PACKAGES"
 LOGFILE="/tmp/uci-defaults-log.txt"
 echo "Starting 99-custom.sh at $(date)" >> $LOGFILE
 echo "编译固件大小为: $PROFILE MB"
-echo "Include Docker: $INCLUDE_DOCKER"
+echo "Docker firmware packages: disabled"
 
 echo "Create pppoe-settings"
 mkdir -p  /home/build/immortalwrt/files/etc/config
@@ -64,11 +71,8 @@ PACKAGES="$PACKAGES luci-i18n-filemanager-zh-cn"
 PACKAGES="$PACKAGES $CUSTOM_PACKAGES"
 
 
-# 判断是否需要编译 Docker 插件
-if [ "$INCLUDE_DOCKER" = "yes" ]; then
-    PACKAGES="$PACKAGES luci-i18n-dockerman-zh-cn"
-    echo "Adding package: luci-i18n-dockerman-zh-cn"
-fi
+# Keep Docker and its management UI out of this firmware.
+PACKAGES="$PACKAGES -docker -dockerd -docker-compose -luci-lib-docker -luci-app-dockerman -luci-i18n-dockerman-zh-cn"
 
 # 若构建openclash 则添加内核
 if echo "$PACKAGES" | grep -q "luci-app-openclash"; then
@@ -117,3 +121,19 @@ if [ $? -ne 0 ]; then
 fi
 
 echo "$(date '+%Y-%m-%d %H:%M:%S') - Build completed successfully."
+
+# Fail before publishing if ImageBuilder omitted VMDK output or included Docker.
+shopt -s nullglob
+images=(bin/targets/x86/64/*squashfs-combined-efi.vmdk)
+manifest_files=(bin/targets/x86/64/*.manifest)
+if (( ${#images[@]} == 0 || ${#manifest_files[@]} == 0 )); then
+    echo "Missing VMDK image or package manifest" >&2
+    exit 1
+fi
+for image in "${images[@]}"; do
+    qemu-img check -f vmdk "$image" || exit 1
+done
+if grep -Eq '^(docker|dockerd|docker-compose|luci-lib-docker|luci-app-dockerman|luci-i18n-dockerman-[^ ]+)[[:space:]]' "${manifest_files[@]}"; then
+    echo "Docker packages unexpectedly present in firmware manifest" >&2
+    exit 1
+fi

@@ -35,15 +35,6 @@ on:
         required: false
         type: boolean
         default: true
-      include_docker:
-        description: |
-          是否编译 Docker 插件
-        required: true
-        default: 'yes'
-        type: choice
-        options:
-          - 'yes'
-          - 'no'
       enable_pppoe:
         description: "是否配置PPPoE拨号信息?"
         required: true
@@ -116,7 +107,6 @@ jobs:
               ;;
           esac
           echo "ROOTFS_SIZE=$ROOTFS_SIZE" >> $GITHUB_ENV
-          include_docker="${{ github.event.inputs.include_docker }}"
           luci_version="${{ github.event.inputs.luci_version }}"
           echo "Building for rootfs_size: $profile"
           docker run --rm -i \
@@ -128,7 +118,6 @@ jobs:
             -v "${{ github.workspace }}/shell:/home/build/immortalwrt/shell" \
             -v "${{ github.workspace }}/x86-64/build24.sh:/home/build/immortalwrt/build.sh" \
             -e PROFILE=$ROOTFS_SIZE \
-            -e INCLUDE_DOCKER=$include_docker \
             -e ENABLE_PPPOE=${{ inputs.enable_pppoe }} \
             -e PPPOE_ACCOUNT=${{ inputs.pppoe_account }} \
             -e PPPOE_PASSWORD=${{ inputs.pppoe_password }} \
@@ -148,20 +137,34 @@ jobs:
           - 🔑 **密码**: 无
           EOF
 
-          if [ "${{ github.event.inputs.include_docker }}" == "yes" ]; then
-            extra_content="#### 默认带docker"
-            echo -e "\n$extra_content" >> ${{ github.workspace }}/router-info.md
-          else
-            echo -e "\n#### 不带docker" >> ${{ github.workspace }}/router-info.md
+          echo "Docker is not included in this firmware." >> "${{ github.workspace }}/router-info.md"
+          echo "Disk format: VMDK (sparse, UEFI boot)." >> "${{ github.workspace }}/router-info.md"
+
+      - name: Prepare VMDK release and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          images=(bin/targets/x86/64/immortalwrt-24.10.*-x86-64-generic-squashfs-combined-efi.vmdk)
+          if (( ${#images[@]} != 1 )); then
+            echo "Expected exactly one 24.10.x x86-64 UEFI VMDK; found ${#images[@]}" >&2
+            exit 1
           fi
+          mkdir -p release
+          cp -- "${images[@]}" release/
+          cd release
+          sha256sum -- *.vmdk > SHA256SUMS
+          sha256sum -c SHA256SUMS
 
       - name: Upload ImmortWrt as release assets
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: Autobuild-x86-64
+          tag_name: Autobuild-x86-64-vmdk
+          fail_on_unmatched_files: true
           body_path: ${{ github.workspace }}/router-info.md
           files: |
-            ${{ github.workspace }}/bin/targets/x86/64/*squashfs-combined-efi.img.gz
+            ${{ github.workspace }}/release/*.vmdk
+            ${{ github.workspace }}/release/SHA256SUMS
           token: ${{ secrets.GITHUB_TOKEN }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
